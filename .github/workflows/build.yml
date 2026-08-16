@@ -1,0 +1,50 @@
+name: Compilar Stormfish (Linux, Windows y Android)
+
+on: [push]
+
+jobs:
+  # 1. Compilación para Linux
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Compilar para Linux
+      run: make
+    - name: Subir binario Linux
+      uses: actions/upload-artifact@v4
+      with:
+        name: stormfish-linux
+        path: stormfish
+
+  # 2. Compilación para Windows
+  build-windows:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Compilar para Windows
+      run: make
+    - name: Subir binario Windows
+      uses: actions/upload-artifact@v4
+      with:
+        name: stormfish-windows
+        path: stormfish.exe
+
+  # 3. Compilación para Android ARM64
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Configurar Android NDK
+      uses: android-actions/setup-ndk@v3
+      with:
+        ndk-version: r26b
+    - name: Compilar para Android
+      run: |
+        export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+        export CXX=$TOOLCHAIN/bin/aarch64-linux-android24-clang++
+        make
+    - name: Subir binario Android
+      uses: actions/upload-artifact@v4
+      with:
+        name: stormfish-android-arm64
+        path: stormfish
