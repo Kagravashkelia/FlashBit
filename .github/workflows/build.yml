@@ -1,55 +1,56 @@
-name: Compilar Stormfish (Linux, Windows y Android)
+name: Compilar Stormfish con Makefile
 
 on: [push]
 
 jobs:
-  # 1. Compilación para Linux
+  # 1. Compilación para Linux usando tu Makefile
   build-linux:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - name: Compilar para Linux
+    - name: Ejecutar make (Linux)
       run: make
-    - name: Subir binario Linux
+    - name: Guardar artefacto Linux
       uses: actions/upload-artifact@v4
       with:
         name: stormfish-linux
         path: stormfish
 
-  # 2. Compilación para Windows
+  # 2. Compilación para Windows usando tu Makefile
   build-windows:
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
     steps:
     - uses: actions/checkout@v4
-    - name: Compilar para Windows
+    - name: Ejecutar make (Windows)
       run: make
-    - name: Subir binario Windows
+    - name: Guardar artefacto Windows
       uses: actions/upload-artifact@v4
       with:
         name: stormfish-windows
         path: stormfish.exe
 
-  # 3. Compilación para Android ARM64
+  # 3. Compilación para Android ARM64 inyectando el NDK en tu Makefile
   build-android:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
     
-    - name: Descargar y configurar Android NDK directamente
+    - name: Descargar Android NDK
       run: |
-        echo "Descargando NDK r26b..."
         wget -q https://dl.google.com/android/repository/android-ndk-r26b-linux.zip
-        echo "Descomprimiendo..."
         unzip -q android-ndk-r26b-linux.zip
         echo "ANDROID_NDK_HOME=$PWD/android-ndk-r26b" >> $GITHUB_ENV
 
-    - name: Compilar para Android
+    - name: Ejecutar make para Android (ARM64)
       run: |
         export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
         export CXX=$TOOLCHAIN/bin/aarch64-linux-android24-clang++
         make
-        
-    - name: Subir binario Android
+
+    - name: Guardar artefacto Android
       uses: actions/upload-artifact@v4
       with:
         name: stormfish-android-arm64
