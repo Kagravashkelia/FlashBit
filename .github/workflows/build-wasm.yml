@@ -62,7 +62,9 @@ jobs:
             -Istockfish_nnue_probe \
             --embed-file $NNUE_FILE \
             -s WASM=1 \
-            -s PROXY_TO_WORKER=1 \
+            -s NO_EXIT_RUNTIME=1 \
+            -s EXPORTED_FUNCTIONS="['_main']" \
+            -s EXPORTED_RUNTIME_METHODS='["callMain"]' \
             -s ALLOW_MEMORY_GROWTH=1 \
             -o dist/FlashBit.js
 
