@@ -23,27 +23,15 @@ jobs:
         run: |
           mkdir -p dist
 
-          # 1. Neutralizamos incbin.h agregando soportes para INCBIN e INCBIN_EXTERN
+          # 1. Neutralizamos incbin.h sin romper la sangría YAML
           INCBIN_PATH=$(find stockfish_nnue_probe -type f -name "incbin.h" | head -n 1)
           if [ -n "$INCBIN_PATH" ]; then
             echo "Neutralizando $INCBIN_PATH para WebAssembly..."
-            cat << 'EOF' > "$INCBIN_PATH"
-#ifndef INCBIN_HDR
-#define INCBIN_HDR
-#define INCBIN(NAME, FILENAME) \
-    extern "C" { \
-        const unsigned char g##NAME##Data[1] = {0}; \
-        const unsigned char* const g##NAME##End = g##NAME##Data; \
-        const unsigned int g##NAME##Size = 0; \
-    }
-#define INCBIN_EXTERN(NAME) \
-    extern "C" { \
-        extern const unsigned char g##NAME##Data[]; \
-        extern const unsigned char* const g##NAME##End; \
-        extern const unsigned int g##NAME##Size; \
-    }
-#endif
-EOF
+            echo '#ifndef INCBIN_HDR' > "$INCBIN_PATH"
+            echo '#define INCBIN_HDR' >> "$INCBIN_PATH"
+            echo '#define INCBIN(NAME, FILENAME) extern "C" { const unsigned char g##NAME##Data[1] = {0}; const unsigned char* const g##NAME##End = g##NAME##Data; const unsigned int g##NAME##Size = 0; }' >> "$INCBIN_PATH"
+            echo '#define INCBIN_EXTERN(NAME) extern "C" { extern const unsigned char g##NAME##Data[]; extern const unsigned char* const g##NAME##End; extern const unsigned int g##NAME##Size; }' >> "$INCBIN_PATH"
+            echo '#endif' >> "$INCBIN_PATH"
           fi
 
           # 2. Búsqueda de fuentes C++
