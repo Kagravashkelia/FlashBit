@@ -1,0 +1,3 @@
+[submodule "stockfish_nnue_probe"]
+	path = stockfish_nnue_probe
+	url = https://github.com/usuario/repositorio_de_nnue.git
