@@ -11,11 +11,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Obtenemos el código fuente de tu repositorio (incluyendo submódulos si los usas)
+      # 1. Clona el código directamente
       - name: Clonar código fuente
         uses: actions/checkout@v4
-        with:
-          submodules: true
 
       # 2. Preparamos el entorno de Emscripten en la nube
       - name: Configurar Emscripten SDK
