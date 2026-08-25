@@ -1,0 +1,64 @@
+name: Compilar FlashBit a WASM
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-wasm:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Obtenemos el código fuente de tu repositorio (incluyendo submódulos si los usas)
+      - name: Clonar código fuente
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      # 2. Preparamos el entorno de Emscripten en la nube
+      - name: Configurar Emscripten SDK
+        uses: emscripten-core/setup-emsdk@v16
+        with:
+          version: 'latest'
+
+      # 3. Compilación directa pasando todas las rutas y flags optimizados
+      - name: Compilar motor a WebAssembly
+        run: |
+          mkdir -p dist
+
+          # Búsqueda dinámica de archivos .cpp excluyendo main y NNUEBridge no deseados
+          SRC_ENGINE=$(find src -type f -name "*.cpp")
+          SRC_PROBE=$(find stockfish_nnue_probe -type f -name "*.cpp" \
+            ! -name "main.cpp" \
+            ! -name "NNUEBridge*" \
+            ! -path "*/NNUEBridge*")
+
+          echo "Compilando archivos fuente..."
+
+          emcc $SRC_ENGINE $SRC_PROBE \
+            -std=c++17 \
+            -O3 \
+            -msimd128 \
+            -flto \
+            -funroll-loops \
+            -finline-functions \
+            -fomit-frame-pointer \
+            -DNDEBUG \
+            -Iinclude \
+            -Isrc \
+            -Istockfish_nnue_probe \
+            -s WASM=1 \
+            -s EXPORTED_FUNCTIONS="['_init_board', '_get_best_move']" \
+            -s EXPORTED_RUNTIME_METHODS='["cwrap", "ccall"]' \
+            -s ALLOW_MEMORY_GROWTH=1 \
+            -s EXPORT_ES6=1 \
+            -o dist/FlashBit.js
+
+      # 4. Guardamos los binarios resultantes como artefactos en GitHub
+      - name: Subir artefacto compilado (.js y .wasm)
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlashBit-WASM-Build
+          path: dist/
