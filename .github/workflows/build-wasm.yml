@@ -62,8 +62,10 @@ jobs:
             -Istockfish_nnue_probe \
             --embed-file $NNUE_FILE \
             -s WASM=1 \
-            --proxy-to-worker \
+            -s ASYNCIFY=1 \
+            -s NO_EXIT_RUNTIME=1 \
             -s ALLOW_MEMORY_GROWTH=1 \
+            -s EXPORTED_RUNTIME_METHODS='["callMain"]' \
             -o dist/FlashBit.js
 
       - name: Subir artefacto compilado (.js y .wasm)
