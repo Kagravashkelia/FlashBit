@@ -11,17 +11,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Clona el código directamente
+      # 1. Clona el código fuente del repositorio
       - name: Clonar código fuente
         uses: actions/checkout@v4
 
-      # 2. Preparamos el entorno de Emscripten en la nube
+      # 2. Configura el SDK de Emscripten en la nube
       - name: Configurar Emscripten SDK
         uses: emscripten-core/setup-emsdk@v16
         with:
           version: 'latest'
 
-      # 3. Compilación directa pasando todas las rutas y flags optimizados
+      # 3. Compilación a WebAssembly con NNUE incrustada mediante el VFS de Emscripten
       - name: Compilar motor a WebAssembly
         run: |
           mkdir -p dist
@@ -33,7 +33,11 @@ jobs:
             ! -name "NNUEBridge*" \
             ! -path "*/NNUEBridge*")
 
-          echo "Compilando archivos fuente..."
+          # Encuentra automáticamente el archivo de la red neuronal (.nnue) en tu proyecto
+          NNUE_FILE=$(find . -type f -name "*.nnue" | head -n 1)
+
+          echo "Archivo NNUE detectado: $NNUE_FILE"
+          echo "Compilando código C++ e incrustando la red neuronal..."
 
           emcc $SRC_ENGINE $SRC_PROBE \
             -std=c++17 \
@@ -44,9 +48,11 @@ jobs:
             -finline-functions \
             -fomit-frame-pointer \
             -DNDEBUG \
+            -DNO_EMBEDDED_NNUE \
             -Iinclude \
             -Isrc \
             -Istockfish_nnue_probe \
+            --embed-file $NNUE_FILE \
             -s WASM=1 \
             -s EXPORTED_FUNCTIONS="['_init_board', '_get_best_move']" \
             -s EXPORTED_RUNTIME_METHODS='["cwrap", "ccall"]' \
