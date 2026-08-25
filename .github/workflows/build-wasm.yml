@@ -15,29 +15,28 @@ jobs:
       - name: Clonar código fuente
         uses: actions/checkout@v4
 
-      # 2. Configura el SDK de Emscripten en la nube
+      # 2. Configura el SDK de Emscripten
       - name: Configurar Emscripten SDK
         uses: emscripten-core/setup-emsdk@v16
         with:
           version: 'latest'
 
-      # 3. Compilación a WebAssembly con NNUE incrustada mediante el VFS de Emscripten
+      # 3. Compilación limpia anulando el ensamblador x86 e incrustando la red vía VFS
       - name: Compilar motor a WebAssembly
         run: |
           mkdir -p dist
 
-          # Búsqueda dinámica de archivos .cpp excluyendo main y NNUEBridge no deseados
+          # Búsqueda de archivos C++ excluyendo main y bridges no deseados
           SRC_ENGINE=$(find src -type f -name "*.cpp")
           SRC_PROBE=$(find stockfish_nnue_probe -type f -name "*.cpp" \
             ! -name "main.cpp" \
             ! -name "NNUEBridge*" \
             ! -path "*/NNUEBridge*")
 
-          # Encuentra automáticamente el archivo de la red neuronal (.nnue) en tu proyecto
           NNUE_FILE=$(find . -type f -name "*.nnue" | head -n 1)
 
           echo "Archivo NNUE detectado: $NNUE_FILE"
-          echo "Compilando código C++ e incrustando la red neuronal..."
+          echo "Compilando FlashBit para WASM..."
 
           emcc $SRC_ENGINE $SRC_PROBE \
             -std=c++17 \
@@ -48,7 +47,7 @@ jobs:
             -finline-functions \
             -fomit-frame-pointer \
             -DNDEBUG \
-            -DNO_EMBEDDED_NNUE \
+            -D'INCBIN(name, file)=extern "C" { const unsigned char g##name##Data[1] = {0}; const unsigned char* const g##name##End = g##name##Data; const unsigned int g##name##Size = 0; }' \
             -Iinclude \
             -Isrc \
             -Istockfish_nnue_probe \
@@ -60,7 +59,7 @@ jobs:
             -s EXPORT_ES6=1 \
             -o dist/FlashBit.js
 
-      # 4. Guardamos los binarios resultantes como artefactos en GitHub
+      # 4. Guarda los binarios resultantes
       - name: Subir artefacto compilado (.js y .wasm)
         uses: actions/upload-artifact@v4
         with:
