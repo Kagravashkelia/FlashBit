@@ -1,0 +1,9 @@
+# Build outputs
+*.o
+*.d
+*.exe
+FlashBit
+nul
+
+# Local editor settings
+.vscode/

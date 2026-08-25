@@ -1,48 +1,47 @@
 # ============================================================================
-# STORMFISH ENGINE - HIGH-PERFORMANCE MAKEFILE (CON STOCKFISH_NNUE_PROBE)
+# FLASHBIT / STORMFISH ENGINE - HIGH-PERFORMANCE MAKEFILE
 # ============================================================================
 
 CXX      := g++
 STD      := -std=c++17
 
-# Añade -Wa,-I. y -Wa,-Istockfish_nnue_probe para resolver las rutas de .incbin con LTO
-OPTFLAGS := -O3 -march=native -mavx2 -mfma -flto=auto -funroll-loops -finline-functions -fomit-frame-pointer -Wa,-I. -Wa,-Istockfish_nnue_probe
-
-# Directorios de inclusión (Añadido stockfish_nnue_probe)
+# Opciones de optimización e inclusión para submódulos NNUE
+OPTFLAGS := -O3 -march=x86-64-v3 -mavx2 -mfma -flto=auto -funroll-loops -finline-functions -fomit-frame-pointer -Wa,-I. -Wa,-Istockfish_nnue_probe
 INCLUDES := -Iinclude -Isrc -Istockfish_nnue_probe
 
-CXXFLAGS := $(STD) $(OPTFLAGS) -DNDEBUG -Wall -Wextra $(INCLUDES)
-
+CXXFLAGS := $(STD) $(OPTFLAGS) -DNDEBUG -Wall -Wextra -MMD -MP $(INCLUDES)
 LDFLAGS  := $(OPTFLAGS) -s -Wl,--gc-sections -pthread -Wa,-I. -Wa,-Istockfish_nnue_probe
 
-# Busca automáticamente las fuentes en src/ y en la librería clonada
-SRC_ENGINE := $(wildcard src/*.cpp)
-# Filtra el main.cpp de la librería y los archivos JNI
-# Busca archivos .cpp hasta en carpetas subanidadas (como nnue/features/)
+# Búsqueda automática de fuentes
+SRC_ENGINE    := $(wildcard src/*.cpp)
 SRC_PROBE_ALL := $(wildcard stockfish_nnue_probe/*.cpp) \
                  $(wildcard stockfish_nnue_probe/*/*.cpp) \
                  $(wildcard stockfish_nnue_probe/*/*/*.cpp) \
                  $(wildcard stockfish_nnue_probe/*/*/*/*.cpp)
 
 SRC_PROBE     := $(filter-out stockfish_nnue_probe/main.cpp stockfish_nnue_probe/NNUEBridge%, $(SRC_PROBE_ALL))
-SRC        := $(SRC_ENGINE) $(SRC_PROBE)
+SRC           := $(SRC_ENGINE) $(SRC_PROBE)
 
-# Convierte las rutas .cpp a .o
-OBJ        := $(SRC:.cpp=.o)
+# Objetos y dependencias
+OBJ           := $(SRC:.cpp=.o)
+DEP           := $(OBJ:.o=.d)
 
+# Detección de Sistema Operativo y comandos de limpieza
 ifeq ($(OS),Windows_NT)
-    TARGET  := stormfish.exe
-    RUN_CMD := .\$(TARGET)
-    RM      := del /f /q
-    RM_DIR  := rmdir /s /q
+    TARGET   := FlashBit.exe
+    RUN_CMD  := .\$(TARGET)
+    FIXPATH   = $(subst /,\,$1)
+    RM_FILES  = -del /f /q $(call FIXPATH,$1) 2>nul
 else
-    TARGET  := stormfish
-    RUN_CMD := ./$(TARGET)
-    RM      := rm -f
-    RM_DIR  := rm -rf
+    TARGET   := FlashBit
+    RUN_CMD  := ./$(TARGET)
+    FIXPATH   = $1
+    RM_FILES  = -rm -f $1 2>/dev/null
 endif
 
 all: $(TARGET)
+
+-include $(DEP)
 
 $(TARGET): $(OBJ)
 	@echo "Enlazando $(TARGET) a máxima velocidad..."
@@ -58,8 +57,8 @@ run: $(TARGET)
 
 clean:
 	@echo "Limpiando archivos objeto y ejecutables..."
-	@$(RM) $(TARGET)
-	@$(RM) src\*.o 2>nul || $(RM) src/*.o 2>/dev/null || true
-	@$(RM) stockfish_nnue_probe\*.o 2>nul || $(RM) stockfish_nnue_probe/*.o 2>/dev/null || true
+	@$(call RM_FILES,$(TARGET))
+	@$(call RM_FILES,$(OBJ))
+	@$(call RM_FILES,$(DEP))
 
 .PHONY: all clean run

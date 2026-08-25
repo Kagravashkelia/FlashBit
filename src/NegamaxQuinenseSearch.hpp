@@ -14,14 +14,25 @@
 // ============================================================================
 // 0. CONTROL DE TIEMPO Y LONGJUMP (Zero-Cost Overhead)
 // ============================================================================
-inline std::vector<uint64_t> pos_history;
+// pos_history movido a ThreadWorker
 constexpr int NO_EVAL = 9999999; // Valor centinela fuera del rango normal de evaluación
 
-inline bool is_repetition(const chess::Board& board) {
+constexpr int MAX_PLY = 128;
+
+struct ThreadWorker {
+    int id = 0;
+    uint64_t nodos_busqueda = 0;
+    std::vector<uint64_t> pos_history;
+    chess::Move killer_moves[MAX_PLY][2] = {};
+    int history_table[2][64][64] = {};
+    int static_eval_stack[MAX_PLY] = {};
+};
+
+inline bool is_repetition(const ThreadWorker& worker, const chess::Board& board) {
     int clock = board.halfMoveClock();
-    int end = std::max(0, static_cast<int>(pos_history.size()) - clock);
-    for (int i = static_cast<int>(pos_history.size()) - 2; i >= end; i -= 2) {
-        if (pos_history[i] == board.hash()) {
+    int end = std::max(0, static_cast<int>(worker.pos_history.size()) - clock);
+    for (int i = static_cast<int>(worker.pos_history.size()) - 2; i >= end; i -= 2) {
+        if (worker.pos_history[i] == board.hash()) {
             return true;
         }
     }
@@ -109,7 +120,7 @@ inline int score_from_tt(int score, int ply) {
     return score;
 }
 
-std::string format_score_uci(int score) {
+inline std::string format_score_uci(int score) {
     if (score >= MATE_SCORE - 1000) {
         int mate_in = (MATE_SCORE - score + 1) / 2;
         return "mate " + std::to_string(mate_in);
@@ -146,17 +157,12 @@ inline bool probe_tt(uint64_t key, int depth, int alpha, int beta, int& score, i
     return false;
 }
 
-constexpr int MAX_PLY = 128;
-inline chess::Move killer_moves[MAX_PLY][2];
-inline int history_table[2][64][64];
-inline int static_eval_stack[MAX_PLY];
-
-inline void clear_search_history() {
-    std::fill(&killer_moves[0][0], &killer_moves[0][0] + (MAX_PLY * 2), chess::Move::NO_MOVE);
+inline void clear_search_history(ThreadWorker& worker) {
+    std::fill(&worker.killer_moves[0][0], &worker.killer_moves[0][0] + (MAX_PLY * 2), chess::Move::NO_MOVE);
     for (int c = 0; c < 2; ++c)
         for (int f = 0; f < 64; ++f)
             for (int t = 0; t < 64; ++t)
-                history_table[c][f][t] = 0;
+                worker.history_table[c][f][t] = 0;
 }
 
 // ============================================================================
@@ -167,26 +173,41 @@ constexpr int PIECE_VALUES[] = { 100, 300, 320, 500, 900, 20000, 0 };
 inline chess::PieceType get_least_valuable_attacker(const chess::Board& board, chess::Square sq, 
                                                    chess::Color side, chess::Bitboard& occupied, 
                                                    chess::Square& attacker_sq) {
+    // 1. Peones (Salida ultrarrápida sin consultas de piezas deslizantes)
     chess::Bitboard pawns = board.pieces(chess::PieceType::PAWN, side) & occupied;
     chess::Bitboard pawn_attackers = chess::attacks::pawn(~side, sq) & pawns;
     if (pawn_attackers) { attacker_sq = static_cast<chess::Square>(pawn_attackers.lsb()); return chess::PieceType::PAWN; }
 
+    // 2. Caballos
     chess::Bitboard knights = board.pieces(chess::PieceType::KNIGHT, side) & occupied;
     chess::Bitboard knight_attackers = chess::attacks::knight(sq) & knights;
     if (knight_attackers) { attacker_sq = static_cast<chess::Square>(knight_attackers.lsb()); return chess::PieceType::KNIGHT; }
 
+    // 3. Alfiles, Torres y Damas (Reutilización de Magic Bitboards)
     chess::Bitboard bishops = board.pieces(chess::PieceType::BISHOP, side) & occupied;
-    chess::Bitboard bishop_attackers = chess::attacks::bishop(sq, occupied) & bishops;
-    if (bishop_attackers) { attacker_sq = static_cast<chess::Square>(bishop_attackers.lsb()); return chess::PieceType::BISHOP; }
+    chess::Bitboard rooks   = board.pieces(chess::PieceType::ROOK, side) & occupied;
+    chess::Bitboard queens  = board.pieces(chess::PieceType::QUEEN, side) & occupied;
 
-    chess::Bitboard rooks = board.pieces(chess::PieceType::ROOK, side) & occupied;
-    chess::Bitboard rook_attackers = chess::attacks::rook(sq, occupied) & rooks;
-    if (rook_attackers) { attacker_sq = static_cast<chess::Square>(rook_attackers.lsb()); return chess::PieceType::ROOK; }
+    chess::Bitboard bishop_attacks = 0;
+    if (bishops | queens) {
+        bishop_attacks = chess::attacks::bishop(sq, occupied);
+        chess::Bitboard bishop_attackers = bishop_attacks & bishops;
+        if (bishop_attackers) { attacker_sq = static_cast<chess::Square>(bishop_attackers.lsb()); return chess::PieceType::BISHOP; }
+    }
 
-    chess::Bitboard queens = board.pieces(chess::PieceType::QUEEN, side) & occupied;
-    chess::Bitboard queen_attackers = chess::attacks::queen(sq, occupied) & queens;
-    if (queen_attackers) { attacker_sq = static_cast<chess::Square>(queen_attackers.lsb()); return chess::PieceType::QUEEN; }
+    chess::Bitboard rook_attacks = 0;
+    if (rooks | queens) {
+        rook_attacks = chess::attacks::rook(sq, occupied);
+        chess::Bitboard rook_attackers = rook_attacks & rooks;
+        if (rook_attackers) { attacker_sq = static_cast<chess::Square>(rook_attackers.lsb()); return chess::PieceType::ROOK; }
+    }
 
+    if (queens) {
+        chess::Bitboard queen_attackers = (bishop_attacks | rook_attacks) & queens;
+        if (queen_attackers) { attacker_sq = static_cast<chess::Square>(queen_attackers.lsb()); return chess::PieceType::QUEEN; }
+    }
+
+    // 4. Rey
     chess::Bitboard king = board.pieces(chess::PieceType::KING, side) & occupied;
     chess::Bitboard king_attackers = chess::attacks::king(sq) & king;
     if (king_attackers) { attacker_sq = static_cast<chess::Square>(king_attackers.lsb()); return chess::PieceType::KING; }
@@ -250,7 +271,7 @@ struct ScoredMove {
     int score;
 };
 
-inline int score_move(const chess::Board& board, const chess::Move& move, const chess::Move& tt_move, int ply) {
+inline int score_move(const ThreadWorker& worker, const chess::Board& board, const chess::Move& move, const chess::Move& tt_move, int ply) {
     if (move == tt_move) return 200000000; 
 
     bool is_cap = board.isCapture(move);
@@ -278,23 +299,24 @@ inline int score_move(const chess::Board& board, const chess::Move& move, const 
     }
 
     if (ply < MAX_PLY) {
-        if (move == killer_moves[ply][0]) return 20000000;
-        if (move == killer_moves[ply][1]) return 19000000;
+        if (move == worker.killer_moves[ply][0]) return 20000000;
+        if (move == worker.killer_moves[ply][1]) return 19000000;
     }
 
     int color = static_cast<int>(board.sideToMove());
-    return history_table[color][move.from().index()][move.to().index()];
+    return worker.history_table[color][move.from().index()][move.to().index()];
 }
 
 // ============================================================================
 // 3. QUIESCENCE SEARCH (Con Delta Pruning O(1))
 // ============================================================================
-int quiescence(chess::Board& board, int alpha, int beta, int ply = 0) {
-    nodos_totales_busqueda++;
-    check_time_and_longjump();
+inline int quiescence(ThreadWorker& worker, chess::Board& board, int alpha, int beta, int ply = 0) {
+        worker.nodos_busqueda++;
+        check_time_and_longjump();
 
-    uint64_t key = board.hash();
-    chess::Move tt_move = chess::Move::NO_MOVE;
+        int alpha_orig = alpha;
+        uint64_t key = board.hash();
+        chess::Move tt_move = chess::Move::NO_MOVE;
     int tt_score = 0;
     int cached_eval = NO_EVAL;
 
@@ -312,8 +334,7 @@ int quiescence(chess::Board& board, int alpha, int beta, int ply = 0) {
     std::array<ScoredMove, 256> scored_moves;
     size_t num_moves = moves.size();
     for (size_t i = 0; i < num_moves; ++i) {
-        // CORRECCIÓN: Pasar el tt_move real recuperado arriba para priorizarlo
-        scored_moves[i] = { moves[i], score_move(board, moves[i], tt_move, 0) };
+        scored_moves[i] = { moves[i], score_move(worker, board, moves[i], tt_move, 0) };
     }
 
     for (size_t i = 0; i < num_moves; ++i) {
@@ -329,25 +350,50 @@ int quiescence(chess::Board& board, int alpha, int beta, int ply = 0) {
 
         const auto& move = scored_moves[i].move;
 
-        auto victim = board.at(move.to());
-        int victim_val = (victim != chess::Piece::NONE) ? PIECE_VALUES[static_cast<int>(victim.type())] : 100;
-        if (move.typeOf() != chess::Move::PROMOTION && (stand_pat + victim_val + 200 < alpha)) {
-            continue;
-        }
+            // 1. Identificar el valor real de la víctima (corrigiendo En Passant)
+            int victim_val = 0;
+            if (move.typeOf() == chess::Move::ENPASSANT) {
+                victim_val = PIECE_VALUES[static_cast<int>(chess::PieceType::PAWN)];
+            } else {
+                auto victim = board.at(move.to());
+                if (victim != chess::Piece::NONE) {
+                    victim_val = PIECE_VALUES[static_cast<int>(victim.type())];
+                }
+            }
 
-        if (!see_ge(board, move, 0)) continue;
+            // 2. Sumar el valor de la promoción al Delta
+            if (move.typeOf() == chess::Move::PROMOTION) {
+                victim_val += PIECE_VALUES[static_cast<int>(move.promotionType())] - PIECE_VALUES[static_cast<int>(chess::PieceType::PAWN)];
+            }
+
+            // 3. Delta Pruning con margen de seguridad (200 centipeones)
+            if (stand_pat + victim_val + 200 < alpha) {
+                continue;
+            }
+
+            // 4. SEE Pruning para evitar capturas perdedoras
+            if (!see_ge(board, move, 0)) {
+                continue;
+            }
 
         board.makeMove(move);
-        pos_history.push_back(board.hash());
-        int score = -quiescence(board, -beta, -alpha, ply + 1);
+        worker.pos_history.push_back(board.hash());
+        int score = -quiescence(worker, board, -beta, -alpha, ply + 1);
         board.unmakeMove(move);
-        pos_history.pop_back();
+        worker.pos_history.pop_back();
 
-        if (score >= beta) return beta;
-        if (score > alpha) alpha = score;
+        if (score >= beta) {
+                store_tt(key, 0, beta, stand_pat, TT_BETA, chess::Move::NO_MOVE, ply);
+                return beta;
+            }
+            if (score > alpha) alpha = score;
+        }
+
+        TTFlag flag = (alpha > alpha_orig) ? TT_EXACT : TT_ALPHA;
+        store_tt(key, 0, alpha, stand_pat, flag, chess::Move::NO_MOVE, ply);
+
+        return alpha;
     }
-    return alpha;
-}
 
 constexpr int FUTILITY_MARGIN[6] = { 0, 150, 300, 450, 600, 750 }; 
 inline int LMR_TABLE[64][256];
@@ -371,22 +417,12 @@ inline LMRInit _lmr_init_instance;
 // ============================================================================
 // 4. BÚSQUEDA NEGAMAX PRINCIPAL (Con Lazy SEE)
 // ============================================================================
-int negamax(chess::Board& board, int depth, int alpha, int beta, int ply) {
-    nodos_totales_busqueda++;
+inline int negamax(ThreadWorker& worker, chess::Board& board, int depth, int alpha, int beta, int ply) {
+    worker.nodos_busqueda++;
     check_time_and_longjump();
 
-    if (ply > 0 && (is_repetition(board) || board.isHalfMoveDraw())) {
-    int draw_eval = Stockfish::Probe::eval(board.getFen().c_str());
-
-    // Si estamos ganando, la tabla es muy mala.
-    // Si estamos perdiendo, la tabla es buena.
-    if (draw_eval > WINNING_EVAL)
-        return -DRAW_PENALTY;
-
-    if (draw_eval < -WINNING_EVAL)
-        return DRAW_PENALTY;
-
-    return 0;  
+    if (ply > 0 && (is_repetition(worker, board) || board.isHalfMoveDraw())) {
+        return 0;
     }
 
     int mate_val = MATE_SCORE - ply;
@@ -406,29 +442,26 @@ int negamax(chess::Board& board, int depth, int alpha, int beta, int ply) {
         if (!is_pv_node || (tt_score > alpha && tt_score < beta)) return tt_score;
     }
 
-    // CORRECCIÓN: NUNCA entrar en quiescence si estás en jaque (Bypass vital)
     if (depth <= 0 && !in_check) {
-        return quiescence(board, alpha, beta, ply);
+        return quiescence(worker, board, alpha, beta, ply);
     }
 
     int extension = (in_check && ply < MAX_PLY - 1) ? 1 : 0;
     
-    int eval = (cached_eval != NO_EVAL) ? cached_eval : Stockfish::Probe::eval(board.getFen().c_str());
-    if (ply < MAX_PLY) static_eval_stack[ply] = eval;
+    int eval = (cached_eval != NO_EVAL) ? cached_eval : evaluate(board);
+    if (ply < MAX_PLY) worker.static_eval_stack[ply] = eval;
 
     if (depth >= 4 && tt_move == chess::Move::NO_MOVE && (is_pv_node || eval + 256 >= beta)) {
         int iid_depth = depth - 2;
-        negamax(board, iid_depth, alpha, beta, ply);
+        negamax(worker, board, iid_depth, alpha, beta, ply);
         probe_tt(key, 0, alpha, beta, tt_score, cached_eval, tt_move, ply);
     }
 
-    bool improving = !in_check && ply >= 2 && eval >= static_eval_stack[ply - 2];
+    bool improving = !in_check && ply >= 2 && eval >= worker.static_eval_stack[ply - 2];
 
     if (!is_pv_node && !in_check) {
-        // --- 1. RAZORING (NUEVO) ---
-        // Si estamos destrozados en la evaluación, saltamos directo a Quiescence
         if (depth <= 2 && eval + 300 + (depth * 150) < alpha) {
-            int q_score = quiescence(board, alpha, beta, ply);
+            int q_score = quiescence(worker, board, alpha, beta, ply);
             if (q_score <= alpha) return q_score;
         }
 
@@ -438,27 +471,25 @@ int negamax(chess::Board& board, int depth, int alpha, int beta, int ply) {
 
         if (depth <= 3) {
             if (eval + 300 + (depth * 100) <= alpha) {
-                int q_score = quiescence(board, alpha, beta, ply); 
+                int q_score = quiescence(worker, board, alpha, beta, ply);
                 if (q_score <= alpha) return q_score;
             }
         }
 
         if (depth >= 2 && eval >= beta && board.hasNonPawnMaterial(board.sideToMove())) {
             board.makeNullMove();
-            pos_history.push_back(board.hash()); // CORRECCIÓN: Mantener historia sincrónica
-            // --- 2. NMP BOOST (AGRESIVO) ---
-            // Aumentamos la reducción base a 4 para podar árboles enormes
-            int R = 4 + (depth / 3) + std::min(3, (eval - beta) / 200) + (improving ? 1 : 0); 
-            int null_score = -negamax(board, depth - 1 - R, -beta, -beta + 1, ply + 1);
+            worker.pos_history.push_back(board.hash());
+            int R = 3 + (depth / 3) + std::min(3, (eval - beta) / 200) + (improving ? 1 : 0);
+            int null_score = -negamax(worker, board, depth - 1 - R, -beta, -beta + 1, ply + 1);
             board.unmakeNullMove();
-            pos_history.pop_back(); // CORRECCIÓN
-            if (null_score >= beta) return beta;
+            worker.pos_history.pop_back();
+            if (null_score >= beta) {
+                return (null_score >= MATE_SCORE - MAX_PLY) ? beta : null_score;
+            }
         }
 
-        // --- 3. RFP MEJORADO ---
-        // Exigimos menos ventaja estática para dar por buena la posición y podar
-        int rfp_margin = (improving ? 60 : 90) * depth;
-        if (depth <= 5 && eval - rfp_margin >= beta && std::abs(beta) < MATE_SCORE) {
+        int rfp_margin = (improving ? 75 : 100) * depth;
+        if (depth <= 7 && eval - rfp_margin >= beta && std::abs(beta) < MATE_SCORE) {
             return eval;
         }
 
@@ -471,10 +502,10 @@ int negamax(chess::Board& board, int depth, int alpha, int beta, int ply) {
                 if (!see_ge(board, prob_moves[i], probcut_beta - eval)) continue;
                 
                 board.makeMove(prob_moves[i]);
-                pos_history.push_back(board.hash());
-                int probcut_score = -negamax(board, depth - 4, -probcut_beta, -probcut_beta + 1, ply + 1);
+                worker.pos_history.push_back(board.hash());
+                int probcut_score = -negamax(worker, board, depth - 4, -probcut_beta, -probcut_beta + 1, ply + 1);
                 board.unmakeMove(prob_moves[i]);
-                pos_history.pop_back();
+                worker.pos_history.pop_back();
 
                 if (probcut_score >= probcut_beta) return probcut_beta;
             }
@@ -490,25 +521,16 @@ int negamax(chess::Board& board, int depth, int alpha, int beta, int ply) {
     chess::movegen::legalmoves(moves, board);
 
     if (moves.empty()) {
-    if (in_check)
-        return -MATE_SCORE + ply;
+        if (in_check)
+            return -MATE_SCORE + ply;
 
-    int draw_eval = Stockfish::Probe::eval(board.getFen().c_str());
-
-    // Ahogado: si vamos ganando, lo consideramos desastroso.
-    if (draw_eval > WINNING_EVAL)
-        return -DRAW_PENALTY;
-
-    if (draw_eval < -WINNING_EVAL)
-        return DRAW_PENALTY;
-
-    return 0;
+        return 0;
     }
 
     std::array<ScoredMove, 256> scored_moves;
     size_t num_moves = moves.size();
     for (size_t i = 0; i < num_moves; ++i) {
-        scored_moves[i] = { moves[i], score_move(board, moves[i], tt_move, ply) };
+        scored_moves[i] = { moves[i], score_move(worker, board, moves[i], tt_move, ply) };
     }
 
     int best_score = -std::numeric_limits<int>::max();
@@ -551,30 +573,23 @@ int negamax(chess::Board& board, int depth, int alpha, int beta, int ply) {
         }
 
         if (is_quiet) {
-            int hist = history_table[static_cast<int>(moving_side)][move.from().index()][move.to().index()];
-            
-            // PROTECCIÓN: Solo podamos si ya hemos buscado al menos una jugada (moves_searched > 0)
-            if (moves_searched > 0 && depth <= 3 && hist < -512 && !is_pv_node && !in_check &&
-                !see_ge(board, move, -50 * depth)) {
+            if (futility_pruning && moves_searched > 0) {
                 continue;
             }
 
-            // --- 5. HISTORY PRUNING INTENSO ---
-            // Castigamos más rápido las jugadas que históricamente fallan
-            int history_threshold = -2500 * depth;
-            if (moves_searched > 0 && !is_pv_node && !in_check && depth <= 5 && hist < history_threshold) {
-                continue;
-            }
-            
-
-            // --- 4. LMP ESTRICTO CUADRÁTICO ---
-            // Limita drásticamente las jugadas "basura" en los finales del bucle
             int lmp_threshold = 3 + (depth * depth) / (improving ? 1 : 2);
             if (!is_pv_node && !in_check && depth <= 7 && quiet_moves_searched >= lmp_threshold) {
                 continue;
             }
 
-            if (futility_pruning && moves_searched > 0) {
+            int hist = worker.history_table[static_cast<int>(moving_side)][move.from().index()][move.to().index()];
+            if (moves_searched > 0 && depth <= 3 && hist < -512 && !is_pv_node && !in_check &&
+                !see_ge(board, move, -50 * depth)) {
+                continue;
+            }
+
+            int history_threshold = -2500 * depth;
+            if (moves_searched > 0 && !is_pv_node && !in_check && depth <= 5 && hist < history_threshold) {
                 continue;
             }
 
@@ -585,7 +600,7 @@ int negamax(chess::Board& board, int depth, int alpha, int beta, int ply) {
         }
 
         board.makeMove(move);
-        pos_history.push_back(board.hash());
+        worker.pos_history.push_back(board.hash());
         bool gives_check = board.inCheck();
         moves_searched++;
         
@@ -593,9 +608,10 @@ int negamax(chess::Board& board, int depth, int alpha, int beta, int ply) {
         int new_depth = depth - 1 + extension;
 
         if (moves_searched == 1) {
-            score = -negamax(board, new_depth, -beta, -alpha, ply + 1);
+            score = -negamax(worker, board, new_depth, -beta, -alpha, ply + 1);
         } else {
-            bool can_lmr = (depth >= 3 && moves_searched > 2 && !in_check && !gives_check && !is_pv_node && !is_promotion);
+            bool can_lmr = (depth >= 3 && moves_searched > 2 && !in_check && !gives_check && !is_promotion);
+            bool needs_full_search = true;
 
             if (can_lmr) {
                 if (is_capture) evaluate_see();
@@ -608,30 +624,30 @@ int negamax(chess::Board& board, int depth, int alpha, int beta, int ply) {
                     if (!is_pv_node) R++;
                     if (!improving) R++;
                     if (is_quiet) {
-                        int hist = history_table[static_cast<int>(moving_side)][move.from().index()][move.to().index()];
+                        int hist = worker.history_table[static_cast<int>(moving_side)][move.from().index()][move.to().index()];
                         if (hist < 0) R++;
                         else if (hist > 10000) R--;
                     }
 
                     R = std::clamp(R, 1, new_depth - 1);
-                    score = -negamax(board, new_depth - R, -alpha - 1, -alpha, ply + 1);
-                } else {
-                    score = alpha + 1; 
+                    score = -negamax(worker, board, new_depth - R, -alpha - 1, -alpha, ply + 1);
+                    needs_full_search = (score > alpha);
                 }
-            } else {
-                score = alpha + 1; 
             }
 
-            if (score > alpha) {
-                score = -negamax(board, new_depth, -alpha - 1, -alpha, ply + 1);
+            if (needs_full_search) {
+                // Zero Window Search a profundidad completa si falló LMR o si no aplicó
+                score = -negamax(worker, board, new_depth, -alpha - 1, -alpha, ply + 1);
+
+                // Si la puntuación entra en la ventana PV, hacemos búsqueda completa
                 if (score > alpha && score < beta) {
-                    score = -negamax(board, new_depth, -beta, -alpha, ply + 1);
+                    score = -negamax(worker, board, new_depth, -beta, -alpha, ply + 1);
                 }
             }
         }
 
         board.unmakeMove(move);
-        pos_history.pop_back();
+        worker.pos_history.pop_back();
 
         if (score > best_score) {
             best_score = score;
@@ -641,21 +657,20 @@ int negamax(chess::Board& board, int depth, int alpha, int beta, int ply) {
 
         if (alpha >= beta) { 
             if (is_quiet && ply < MAX_PLY) {
-                // EVITAR CLONES: Solo actualizamos si la jugada no es ya el asesino primario
-                if (move != killer_moves[ply][0]) {
-                    killer_moves[ply][1] = killer_moves[ply][0];
-                    killer_moves[ply][0] = move;
+                if (move != worker.killer_moves[ply][0]) {
+                    worker.killer_moves[ply][1] = worker.killer_moves[ply][0];
+                    worker.killer_moves[ply][0] = move;
                 }
 
                 int color = static_cast<int>(board.sideToMove());
                 int bonus = std::clamp(16 * depth * depth, 0, 1200);
                 
-                int& hist_ref = history_table[color][move.from().index()][move.to().index()];
+                int& hist_ref = worker.history_table[color][move.from().index()][move.to().index()];
                 hist_ref += bonus - (hist_ref * std::abs(bonus) / 16384);
 
                 for (int q = 0; q < num_searched_quiets - 1; ++q) {
                     const auto& q_move = searched_quiets[q];
-                    int& bad_hist = history_table[color][q_move.from().index()][q_move.to().index()];
+                    int& bad_hist = worker.history_table[color][q_move.from().index()][q_move.to().index()];
                     bad_hist -= bonus + (bad_hist * std::abs(bonus) / 16384);
                 }
             }

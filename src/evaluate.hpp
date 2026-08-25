@@ -1,3 +1,5 @@
+#pragma once
+
 #include "probe.h"
 #include "chesslib.hpp"
 
