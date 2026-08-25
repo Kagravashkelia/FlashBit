@@ -46,7 +46,9 @@ jobs:
           echo "Archivo NNUE detectado: $NNUE_FILE"
           echo "Compilando FlashBit para WASM..."
 
-          emcc $SRC_ENGINE $SRC_PROBE \
+          # ¡AQUÍ ESTÁ LA MAGIA! Cambiamos emcc por em++
+          # Y quitamos init_board para exportar solo _main
+          em++ $SRC_ENGINE $SRC_PROBE \
             -std=c++17 \
             -O3 \
             -msimd128 \
@@ -60,8 +62,8 @@ jobs:
             -Istockfish_nnue_probe \
             --embed-file $NNUE_FILE \
             -s WASM=1 \
-            -s EXPORTED_FUNCTIONS="['_init_board', '_get_best_move']" \
-            -s EXPORTED_RUNTIME_METHODS='["cwrap", "ccall"]' \
+            -s EXPORTED_FUNCTIONS="['_main']" \
+            -s EXPORTED_RUNTIME_METHODS='["callMain"]' \
             -s ALLOW_MEMORY_GROWTH=1 \
             -s EXPORT_ES6=1 \
             -o dist/FlashBit.js
